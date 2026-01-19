@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+
+
+# Welcome to this file!
+# This script is SPECIFICALLY meant to read brightness changes from /sys/class/backlight/nvidia_0/brightness and mirror them in either /sys/class/backlight/amdgpu_bl1/brightness or /sys/class/backlight/amdgpu_bl2/brightness.
+# To know if you need this script, check the following criteria:
+#  - You are using a laptop.
+#  - You have an AMD AND an NVIDIA GPU.
+#  - When you press the brightness keys, a brightness slider appears, but the actual screen's brightness does not change.
+#  - /sys/class/backlight/nvidia_0/brightness AND one of /sys/class/backlight/amdgpu_bl1/brightness or /sys/class/backlight/amdgpu_bl2/brightness exist (1)
+#  - The file /sys/class/backlight/nvidia_0/brightness changes when you use the brightness keys (2)
+#  - If you write to /sys/class/backlight/amdgpu_bl1/brightness or /sys/class/backlight/amdgpu_bl2/brightness (the one that exists), the screen's brightness changes (3)
+#
+# To check (1), run the following command: "ls /sys/class/backlight/". You will get a list of existing backlight interfaces.
+# To check (2), run the following command: "cat /sys/class/backlight/nvidia_0/brightness", spam the brightness keys, then run the command again. You should get a different number the second time.
+# To check (3), run the following command: "sudo echo 50 >> /sys/class/backlight/amdgpu_bl*/brightness". It will be immediately obvious if this works, as the screen should become significantly dimmer.
+#
+# This script was created by Caedorus. A GPL licence is included, but basically I consider it too small to fall under most copyright laws. Use it as you see fit. It was made and tested for Linux Mint 22.2 ("Zara") on a Legion Pro 5 16AFR10; it almost certainly works on most even remotely similar distributions. No promises though.
+#
+# Exit codes: this script will exit with a different code depending on what went wrong (it does not normally exit).
+# 1 means that it was ran as a normal user instead of a superuser. In most cases, you can achieve superuser priveleges by prefacing your command with "sudo"; ex. "sudo echo 'test'". This requires your password and you to be allowed to use sudo.
+# Some systems don't use sudo. In that case, look it up online.
+# Also this script is meant to be ran as a systemctl service, which should already imply superuser priveleges.
+# 2 means that the script is not needed, and was interrupted in its infinite loop of doing nothing. Run through the checklist above to verify if you need it.
+# 3 means that one of the files that houses the maximum brightness could not be read from. This is likely a severe issue regarding the health of your (file)system. Likely, more error messages were printed before the script exited; look those up to figure out what is going on.
+# 4 means that the main loop, which is supposed to run forever, stopped. Likely there will have been printed more logs that give you a clue as to what happened. Possibly, inotify-tools isn't installed. If in doubt, look up the error messages.
+# One last thing. If you're running this script as a systemd service using the accompanying .service file called sync_backlights.service, you can check the logs using "systemctl status sync_backlights".
+
+
+if [ ${EUID} -ne 0 ] # check if we are root
+then
+    echo "This is meant to be run as root"
+	exit 1
+fi
+
+NVIDIA_MAXIMUM="$(cat /sys/class/backlight/nvidia_0/max_brightness || echo 0)"
+
+if [[ -d /sys/class/backlight/amdgpu_bl1 ]]; then # the amd backlight could be amdgpu_bl1 or amdgpu_bl2
+    AMD_MAXIMUM="$(cat /sys/class/backlight/amdgpu_bl1/max_brightness || echo 0)"
+    AMD_BACKLIGHT=1
+elif [[ -d /sys/class/backlight/amdgpu_bl2 ]]; then
+    AMD_MAXIMUM="$(cat /sys/class/backlight/amdgpu_bl2/max_brightness || echo 0)"
+    AMD_BACKLIGHT=2
+else
+    echo "The amd backlight interface is missing! This likely means that you do not need this script."
+    while true; do
+        sleep 10 # Do nothing for the rest of eternity
+    done
+    exit 2
+fi
+
+if [[ $AMD_MAXIMUM == 0 || $NVIDIA_MAXIMUM == 0 ]]; then # sanity check
+    echo "Something went wrong getting the max brightness"
+    exit 3
+fi
+
+function update_brightness() { # This is the function that actually changes the brightness.
+    CURRENT_NVIDIA_VALUE="$(cat /sys/class/backlight/nvidia_0/brightness)"
+    AMD_FLOAT=$(printf "%.2f" $((10**2*$CURRENT_NVIDIA_VALUE/$NVIDIA_MAXIMUM*$AMD_MAXIMUM))e-2) # divides the current nvidia value by the maximum nvidia value, then multiplies it with the maximum amd value, returning a float. Precision is set to 2 decimals since it will be rounded anyway.
+    [[ $AMD_FLOAT =~ ^[-+]?[0-9]+(\.[0-9]+)?$ ]] && AMD_VALUE=$(printf "%.0f\n" $AMD_FLOAT) # perform a sanity check to make sure it is a valid float, then round to the nearest integer. 0.5 will round to the nearest even number.
+    CURRENT_AMD_VALUE="$(cat /sys/class/backlight/amdgpu_bl$AMD_BACKLIGHT/brightness || echo 0)"
+    if [[ $AMD_VALUE =~ ^[0-9]+$ ]] && [[ $AMD_VALUE -le $AMD_MAXIMUM ]] && [[ $AMD_VALUE -ge 0 ]] && [[ $AMD_VALUE != $CURRENT_AMD_VALUE ]]; then # checks that $AMD_VALUE is a) a float b) less than or equal to the maximum c) greater than or equal to 0 and d) not the current brightness value.
+        echo $AMD_VALUE >> /sys/class/backlight/amdgpu_bl$AMD_BACKLIGHT/brightness # updates the brightness.
+        echo "Brightness updated from $CURRENT_AMD_VALUE to $AMD_VALUE" # logs updating the brightness.
+    fi
+}
+
+echo "Starting main loop..."
+update_brightness # Always update the brightness once when the script is first ran.
+inotifywait -m -e modify /sys/class/backlight/nvidia_0/brightness | while read changed; do # basically, "if the file changes, do the following"
+    echo $changed
+    update_brightness
+done
+
+echo "The main loop has exited. Likely there is an error above this line thrown by inotifywait that will give you a clue as to why this happened."
+exit 4
