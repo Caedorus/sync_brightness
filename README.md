@@ -23,4 +23,4 @@ To install these modifications, put fix_brightness.service in /etc/systemd/syste
 ```chown root:root /etc/systemd/system/fix_brightness.service && chown root:root /root/.scripts/sync_backlights
 systemctl daemon-reload
 systemctl enable fix_brightness.service
-systemctl start fix_brightness.service```
+systemctl start fix_brightness.service
