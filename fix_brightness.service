@@ -1,0 +1,10 @@
+[Unit]
+Description=Redirect brightness controls from /sys/class/backlight/nvidia_0 to /sys/class/backlight/amdgpu_bl* so the brightness keys work
+After=multi-user.target
+
+[Service]
+ExecStart=/usr/bin/bash /root/.scripts/sync_backlights
+Type=simple
+
+[Install]
+WantedBy=multi-user.target
